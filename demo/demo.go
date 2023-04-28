@@ -14,16 +14,17 @@
 
 // Package main is a simple demo to show how to use the hilbert library
 // When ran, this demo will create the following images:
-// 	hilbert.png, hilbert_animation.gif, peano.png, and peano_animation.gif
+//
+//	hilbert.png, hilbert_animation.gif, peano.png, and peano_animation.gif
 //
 // It is suggested you optimise/compress both images before uploading.
-//     go run demo/demo.go
-//     zopflipng -y logo.png images/logo.png
-//     zopflipng -y hilbert.png images/hilbert.png
-//     zopflipng -y peano.png images/peano.png
-//     gifsicle -O -o images/hilbert_animation.gif hilbert_animation.gif
-//     gifsicle -O -o images/peano_animation.gif peano_animation.gif
 //
+//	go run demo/demo.go
+//	zopflipng -y logo.png images/logo.png
+//	zopflipng -y hilbert.png images/hilbert.png
+//	zopflipng -y peano.png images/peano.png
+//	gifsicle -O -o images/hilbert_animation.gif hilbert_animation.gif
+//	gifsicle -O -o images/peano_animation.gif peano_animation.gif
 package main
 
 import (
@@ -34,11 +35,12 @@ import (
 	"log"
 	"os"
 
+	"math"
+	"strconv"
+
 	"github.com/fogleman/gg"
 	"github.com/google/hilbert"
 	"github.com/google/hilbert/demo/lib"
-	"math"
-	"strconv"
 )
 
 // spaceFillingImage facilitates the drawing of a space filing curve.
@@ -162,10 +164,80 @@ func (h *spaceFillingImage) Draw() (*gg.Context, error) {
 	return gc, nil
 }
 
+func (h *spaceFillingImage) DrawSwap() (*gg.Context, error) {
+
+	width, height := h.Curve.GetDimensions()
+	pwidth, pheight := h.toPixel(width, height)
+
+	gc := gg.NewContext(int(pwidth), int(pheight))
+	gc.SetColor(h.BackgroundColor)
+	gc.Clear()
+
+	if h.DrawGrid {
+		h.drawGrid(gc, width, height)
+	}
+
+	mat := make([][]int, height)
+	for i := range mat {
+		mat[i] = make([]int, width)
+	}
+	for t := 0; t < width*height; t++ {
+
+		// Map the 1D number into the 2D space
+		x, y, err := h.Curve.Map(t)
+		if err != nil {
+			return nil, err
+		}
+		mat[x][y] = t
+
+		px, py := h.toPixel(x, y)
+		// Move the snake along
+		centerX, centerY := px+h.SquareWidth/2, py+h.SquareHeight/2
+		if t == 0 {
+			gc.MoveTo(centerX, centerY)
+		} else {
+			gc.LineTo(centerX, centerY)
+		}
+	}
+
+	// stir(mat, width)
+	rt := kbucket(mat, mat[3][3], 3, 3, width)
+	printrt(rt)
+	// bf(mat, width)
+	// fmt.Printf("stired matrix:\n")
+	// for i := 0; i < width; i++ {
+	// 	fmt.Printf("%d\n", mat[i])
+	// }
+	for x := 0; x < height; x++ {
+		for y := 0; y < width; y++ {
+			px, py := h.toPixel(x, y)
+			t := mat[x][y]
+			// Draw the grid for t
+			if h.DrawText {
+				text := strconv.Itoa(t)
+
+				gc.SetColor(h.TextColor)
+				gc.DrawStringAnchored(text, px+h.TextMargin, py, 0, 1)
+			}
+		}
+	}
+
+	// Draw the snake at the end, to form one continuous line.
+	gc.SetColor(h.SnakeColor)
+	gc.SetLineWidth(h.SnakeWidth)
+
+	gc.SetLineCap(gg.LineCapSquare)
+	gc.SetLineJoin(gg.LineJoinRound)
+
+	gc.Stroke()
+
+	return gc, nil
+}
+
 func mainDrawOne(filename string, curve hilbert.SpaceFilling) error {
 	log.Printf("Drawing one image %q", filename)
 
-	img, err := createSpaceFillingImage(curve, 64, 64).Draw()
+	img, err := createSpaceFillingImage(curve, 64, 64).DrawSwap()
 	if err != nil {
 		return err
 	}
@@ -236,32 +308,112 @@ func main() {
 		return s
 	}
 
-	newPeano := func(n int) hilbert.SpaceFilling {
-		s, err := hilbert.NewPeano(int(math.Pow(3, float64(n))))
-		if err != nil {
-			panic(fmt.Errorf("failed to create peano space: %s", err.Error()))
+	if err := mainDrawOne("hilbert.png", newHilbert(4)); err != nil {
+		log.Fatalf("Failed to draw image: %s", err.Error())
+	}
+}
+
+func stir(arr [][]int, n int) {
+	j := 0
+	for i := n - 2; i >= n/2; i -= 2 {
+		tmp := arr[i]
+		arr[i] = arr[j]
+		arr[j] = tmp
+		j += 2
+	}
+
+	k := 0
+	for i := n - 2; i >= n/2; i -= 2 {
+		for j := 0; j < n; j++ {
+			tmp := arr[j][i]
+			arr[j][i] = arr[j][k]
+			arr[j][k] = tmp
 		}
-		return s
+		k += 2
 	}
 
-	if err := mainDrawLogo("logo.png", newHilbert(4)); err != nil {
-		log.Fatalf("Failed to draw image: %s", err.Error())
+	for i := 0; i < n; i++ {
+		fmt.Printf("%*d\n", 3, arr[i])
 	}
+}
 
-	if err := mainDrawOne("hilbert.png", newHilbert(3)); err != nil {
-		log.Fatalf("Failed to draw image: %s", err.Error())
+type coordinates struct {
+	x int
+	y int
+}
+
+type routingrRecord struct {
+	x    int
+	y    int
+	id   int
+	dist int
+}
+
+func ManhattanDist(c1, c2 coordinates) int {
+	return abs(c1.x-c2.x) + abs(c1.y-c2.y)
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
 	}
+	return x
+}
 
-	if err := mainDrawAnimation("hilbert_animation.gif", newHilbert, 1, 8); err != nil {
-		log.Fatalf("Failed to draw animation: %s", err.Error())
+func msb(n int) int {
+	n |= n >> 1
+	n |= n >> 2
+	n |= n >> 4
+	n |= n >> 8
+	n |= n >> 16
+	n = ((n + 1) >> 1)
+	return n
+}
+
+// func TrackNeighbors(mat [][]int) {
+
+// }
+
+// func BFS(mat [][]int, n, lo, up int, c coordinates) (int, int) {
+// 	queue := make([]coordinates, n*n)
+// 	queue = append(queue, 1)
+// 	// Top (just get next element, don't remove it)
+// 	x = queue[0]
+// 	// Discard top element
+// 	queue = queue[1:]
+
+// }
+
+func bf(mat [][]int, n int) {
+	for i := 0; i < n; i++ {
+		for j := 0; j < n; j++ {
+			kbucket(mat, mat[i][j], i, j, n)
+		}
 	}
+}
 
-	if err := mainDrawOne("peano.png", newPeano(2)); err != nil {
-		log.Fatalf("Failed to draw image: %s", err.Error())
+func kbucket(mat [][]int, n, x, y, width int) map[int][]routingrRecord {
+	routingTable := make(map[int][]routingrRecord)
+	for i := 0; i < width; i++ {
+		for j := 0; j < width; j++ {
+			dist := ManhattanDist(coordinates{x, y}, coordinates{i, j})
+			id := mat[i][j]
+			routingTable[msb(n^id)] = append(routingTable[msb(n^id)], routingrRecord{i, j, id, dist})
+		}
 	}
+	return routingTable
+}
 
-	if err := mainDrawAnimation("peano_animation.gif", newPeano, 1, 6); err != nil {
-		log.Fatalf("Failed to draw animation: %s", err.Error())
+func printrt(rt map[int][]routingrRecord) {
+	for k, v := range rt {
+		fmt.Printf("inside bucket %d:\n", k)
+		closest := routingrRecord{0, 0, 0, int(^uint(0) >> 1)}
+		for _, rec := range v {
+			if rec.dist < closest.dist {
+				closest = rec
+			}
+			fmt.Printf("x:%d, y:=%d, id:%d, dist:%d\n", rec.x, rec.y, rec.id, rec.dist)
+		}
+		fmt.Printf("x:%d, y:=%d, id:%d, dist:%d is most close to node\n", closest.x, closest.y, closest.id, closest.dist)
 	}
-
 }
